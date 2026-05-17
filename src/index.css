@@ -1,0 +1,39 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-gray-50 text-gray-900 antialiased;
+  }
+}
+
+@layer components {
+  .score-bar {
+    @apply h-2 rounded-full transition-all duration-500;
+  }
+
+  .badge-hot {
+    @apply bg-red-100 text-red-700 border border-red-200;
+  }
+
+  .badge-warm {
+    @apply bg-amber-100 text-amber-700 border border-amber-200;
+  }
+
+  .badge-cold {
+    @apply bg-blue-100 text-blue-700 border border-blue-200;
+  }
+
+  .card {
+    @apply bg-white rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow duration-200;
+  }
+
+  .btn-filter {
+    @apply px-4 py-2 rounded-lg font-medium text-sm transition-all duration-150 border;
+  }
+
+  .btn-filter-active {
+    @apply shadow-sm;
+  }
+}

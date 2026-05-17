@@ -1,0 +1,19 @@
+{
+  "accounts": [
+    {
+      "label": "cekgroup",
+      "email": "ariel@cekgroup.com.ar",
+      "enabled": true,
+      "profileDir": "/Users/arielyacar/Library/Application Support/Google/Chrome/Profile 1",
+      "description": "Cuenta principal CekGroup"
+    },
+    {
+      "label": "gmail",
+      "email": "yacarariel@gmail.com",
+      "enabled": true,
+      "profileDir": "/Users/arielyacar/Library/Application Support/Google/Chrome/Default",
+      "description": "Cuenta secundaria Gmail"
+    }
+  ],
+  "syncIntervalHours": 4
+}

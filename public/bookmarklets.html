@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Lead Profiler — Bookmarklets</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 700px; margin: 40px auto; padding: 0 20px; color: #1f2937; }
+  h1 { font-size: 1.4rem; font-weight: 700; margin-bottom: 4px; }
+  p { color: #6b7280; margin-top: 4px; }
+  .card { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 12px; padding: 20px; margin: 16px 0; }
+  .card h2 { margin: 0 0 4px; font-size: 1rem; }
+  .card .sub { color: #6b7280; font-size: .85rem; margin: 0 0 14px; }
+  a.bookmarklet { display: inline-block; background: #4f46e5; color: white; padding: 10px 18px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: .9rem; cursor: grab; }
+  a.bookmarklet:hover { background: #4338ca; }
+  .steps { font-size: .85rem; color: #374151; line-height: 1.8; margin-top: 12px; }
+  .steps b { color: #111827; }
+  code { background: #e5e7eb; padding: 2px 6px; border-radius: 4px; font-size: .8rem; }
+</style>
+</head>
+<body>
+
+<h1>Lead Profiler — Bookmarklets de Sincronización</h1>
+<p>Arrastrá cada bookmarklet a tu barra de favoritos. Un click en la pestaña correcta de Leadnamics sincroniza automáticamente.</p>
+
+<div class="card">
+  <h2>🔵 Cuenta: cekgroup (ariel@cekgroup.com.ar)</h2>
+  <p class="sub">Usarlo estando en portal.leadnamics.io con esta cuenta</p>
+
+  <a class="bookmarklet" href="javascript:(async()=>{const r=localStorage.getItem('persist:root-lidz');if(!r){alert('No hay sesi%C3%B3n de Leadnamics en esta pesta%C3%B1a');return;}const token=JSON.parse(JSON.parse(r).user).accessToken;if(!token){alert('Token no encontrado');return;}const base='https://lidz-back-jipksosbaq-tl.a.run.app/clients/v2/table';const pId=new URLSearchParams(location.search).get('projectId')||'1287';const f=await fetch(base+'?offset=0&limit=1&filterModel=%7B%22items%22%3A%5B%5D%7D&sortModel=&searchTerm=&projectId='+pId,{headers:{Authorization:'Bearer '+token}});const{total}=await f.json();const LIMIT=100;const pages=Math.ceil(total/LIMIT);const all=[];for(let i=0;i<pages;i++){const rr=await fetch(base+'?offset='+(i*LIMIT)+'&limit='+LIMIT+'&filterModel=%7B%22items%22%3A%5B%5D%7D&sortModel=&searchTerm=&projectId='+pId,{headers:{Authorization:'Bearer '+token}});const d=await rr.json();all.push(...(d.clients||[]));await new Promise(r=>setTimeout(r,120));}const em={En_Contacto:'consulta_especifica',Prioridad:'solicita_propuesta',Seguimiento:'solicita_propuesta',Por_Contactar:'consulta_general'};const leads=all.map(c=>({id:'lnm-cekgroup-'+c.id,name:[c.firstName,c.lastName,c.motherLastName].filter(Boolean).join(' ').trim()||c.alias||'Cliente '+c.id,phone:c.phone||'',source:c.source||'Leadnamics (cekgroup)',propertyInterest:c.topics?.join(', ')||c.subProject?.name||'',zone:'',budget:c.budget||0,urgency:'sin_definir',engagement:em[(c.status||'').replace(/ /g,'_')]||'consulta_general',objections:[],lastContact:c.lastMessageDate?.slice(0,10)||c.createdAt?.slice(0,10)||null,notes:[c.notes,c.adminNotes].filter(Boolean).join(' | '),_lnm:{id:c.id,score:c.score??0,category:c.score>=70?'HOT':c.score>=40?'WARM':'COLD',status:c.status||'',stage:c.activeClientStage?.name||'',account:'cekgroup',project:c.project?.name||''}}));try{const post=await fetch('http://localhost:3001/sync',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account:'cekgroup',leads})});const result=await post.json();alert('✅ Sync OK: '+result.total+' leads de ['+result.sources.join(', ')+']');}catch{alert('⚠️ Server no disponible. Descargando JSON...');const blob=new Blob([JSON.stringify(leads,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='leads-cekgroup-'+(new Date().toISOString().slice(0,10))+'.json';a.click();}})()">
+    ⚡ Sync CekGroup → Lead Profiler
+  </a>
+
+  <div class="steps">
+    <b>Cómo usar:</b><br>
+    1. Arrastrá este botón a tu barra de favoritos<br>
+    2. Abrí Leadnamics con la cuenta <code>ariel@cekgroup.com.ar</code><br>
+    3. Hacé click en el bookmarklet → sincroniza en ~30 seg<br>
+    4. Abrí Lead Profiler y hacé click en <b>Sync</b>
+  </div>
+</div>
+
+<div class="card">
+  <h2>🟢 Cuenta: gmail (yacarariel@gmail.com)</h2>
+  <p class="sub">Usarlo estando en portal.leadnamics.io con esta cuenta (Safari u otro perfil)</p>
+
+  <a class="bookmarklet" href="javascript:(async()=>{const r=localStorage.getItem('persist:root-lidz');if(!r){alert('No hay sesi%C3%B3n de Leadnamics en esta pesta%C3%B1a');return;}const token=JSON.parse(JSON.parse(r).user).accessToken;if(!token){alert('Token no encontrado');return;}const base='https://lidz-back-jipksosbaq-tl.a.run.app/clients/v2/table';const pId=new URLSearchParams(location.search).get('projectId')||'1287';const f=await fetch(base+'?offset=0&limit=1&filterModel=%7B%22items%22%3A%5B%5D%7D&sortModel=&searchTerm=&projectId='+pId,{headers:{Authorization:'Bearer '+token}});const{total}=await f.json();const LIMIT=100;const pages=Math.ceil(total/LIMIT);const all=[];for(let i=0;i<pages;i++){const rr=await fetch(base+'?offset='+(i*LIMIT)+'&limit='+LIMIT+'&filterModel=%7B%22items%22%3A%5B%5D%7D&sortModel=&searchTerm=&projectId='+pId,{headers:{Authorization:'Bearer '+token}});const d=await rr.json();all.push(...(d.clients||[]));await new Promise(r=>setTimeout(r,120));}const em={En_Contacto:'consulta_especifica',Prioridad:'solicita_propuesta',Seguimiento:'solicita_propuesta',Por_Contactar:'consulta_general'};const leads=all.map(c=>({id:'lnm-gmail-'+c.id,name:[c.firstName,c.lastName,c.motherLastName].filter(Boolean).join(' ').trim()||c.alias||'Cliente '+c.id,phone:c.phone||'',source:c.source||'Leadnamics (gmail)',propertyInterest:c.topics?.join(', ')||c.subProject?.name||'',zone:'',budget:c.budget||0,urgency:'sin_definir',engagement:em[(c.status||'').replace(/ /g,'_')]||'consulta_general',objections:[],lastContact:c.lastMessageDate?.slice(0,10)||c.createdAt?.slice(0,10)||null,notes:[c.notes,c.adminNotes].filter(Boolean).join(' | '),_lnm:{id:c.id,score:c.score??0,category:c.score>=70?'HOT':c.score>=40?'WARM':'COLD',status:c.status||'',stage:c.activeClientStage?.name||'',account:'gmail',project:c.project?.name||''}}));try{const post=await fetch('http://localhost:3001/sync',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account:'gmail',leads})});const result=await post.json();alert('✅ Sync OK: '+result.total+' leads de ['+result.sources.join(', ')+']');}catch{alert('⚠️ Server no disponible. Descargando JSON...');const blob=new Blob([JSON.stringify(leads,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='leads-gmail-'+(new Date().toISOString().slice(0,10))+'.json';a.click();}})()">
+    ⚡ Sync Gmail → Lead Profiler
+  </a>
+
+  <div class="steps">
+    <b>Cómo usar:</b><br>
+    1. Arrastrá este botón a tu barra de favoritos de Safari<br>
+    2. Abrí Leadnamics con la cuenta <code>yacarariel@gmail.com</code><br>
+    3. Hacé click en el bookmarklet → sincroniza en ~30 seg<br>
+    4. Abrí Lead Profiler y hacé click en <b>Sync</b>
+  </div>
+</div>
+
+<div style="margin-top:24px; padding: 16px; background:#eff6ff; border-radius:8px; font-size:.85rem; color:#1d4ed8;">
+  <b>ℹ️ Requisito:</b> El sync server debe estar corriendo: <code>npm run server</code> en el proyecto Lead Profiler.
+  Si el server no está corriendo, el bookmarklet descarga un JSON para importar manualmente.
+</div>
+
+</body>
+</html>

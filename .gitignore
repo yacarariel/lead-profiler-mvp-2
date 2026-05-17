@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.env
+public/leads-live.json
+logs/
+*.log
