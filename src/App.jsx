@@ -492,7 +492,7 @@ export default function App() {
       new Date(b.lastContact || 0) - new Date(a.lastContact || 0)
     )
     return list
-  }, [leads, activeFilter, accountFilter, searchQuery, sortBy])
+ }, [leads, activeFilter, accountFilter, searchQuery, sortBy])
 
   return (
     <div className="min-h-screen bg-gray-50">
