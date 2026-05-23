@@ -90,6 +90,114 @@ function getCategory(score) {
   return 'COLD'
 }
 
+// ─── Análisis de señales en notas y conversación ───────────────────────────────
+
+const SIGNALS_POSITIVAS = [
+  'interesad', 'quiere ver', 'quiero ver', 'visita', 'agend', 'confirm',
+  'propuesta', 'comprar', 'compro', 'inversión', 'inversion', 'urgente',
+  'listo', 'le gustó', 'le gusta', 'avanzar', 'negociac', 'muy bien',
+  'sí quiere', 'si quiere', 'pidió info', 'pidio info', 'contactar',
+]
+const SIGNALS_NEGATIVAS = [
+  'no interesa', 'no le interesa', 'no responde', 'no contesta', 'canceló',
+  'cancelo', 'sin respuesta', 'no avanza', 'perdió', 'perdio', 'descartado',
+  'no quiere', 'compró en', 'compro en', 'ya compró', 'ya tiene', 'no busca',
+  'no puede', 'no está', 'no esta', 'fuera de presupuesto', 'muy caro',
+  'no le gustó', 'no le gusto', 'no es lo que', 'arrepintió', 'arrepintio',
+]
+
+function analyzeConversation(notes) {
+  if (!notes) return 0
+  const text = notes.toLowerCase()
+  let signal = 0
+  SIGNALS_POSITIVAS.forEach(kw => { if (text.includes(kw)) signal += 4 })
+  SIGNALS_NEGATIVAS.forEach(kw => { if (text.includes(kw)) signal -= 8 })
+  return Math.max(-40, Math.min(20, signal))
+}
+
+// Detecta si un lead fue descartado en Leadnamics por status o stage
+// stageId 152 = "Descartado", 154 = "Expirado" en Leadnamics (confirmado empíricamente)
+const DISCARDED_STAGE_IDS = new Set([152, 154])
+
+function detectDescartado(lnm) {
+  if (lnm?.endReason) return true                          // razón de cierre explícita
+  if (lnm?.discarded === true) return true                 // flag del bookmarklet
+  if (DISCARDED_STAGE_IDS.has(lnm?.stageId)) return true  // stageId conocido (152=Descartado, 154=Expirado)
+  const text = [lnm?.status, lnm?.stage, lnm?.funnelCol].filter(Boolean).join(' ').toLowerCase()
+  return /descart|archiv|expir|no.interesa|sin.interes|cerrado.perdido|no.compra/.test(text)
+}
+
+// Status de Leadnamics → modificador de score
+const STATUS_MODIFIER = {
+  'Prioridad':      +12,
+  'En_Contacto':    +5,
+  'Seguimiento':    0,
+  'Por_Contactar':  -5,
+  'Descartado':     -60,
+  'Archivado':      -50,
+}
+
+function processLeads(rawLeads) {
+  return rawLeads.map(lead => {
+    const { total: ourScore, breakdown } = calcScore(lead)
+    const lnm = lead._lnm || {}
+
+    // ── Detección de descarte / expirado ──────────────────────────────────────
+    const isExpired   = lnm?.stageId === 154 ||
+                        /expir/.test([lnm?.status, lnm?.stage].filter(Boolean).join(' ').toLowerCase())
+    const isDiscarded = detectDescartado(lnm)
+
+    if (isDiscarded) {
+      const label = isExpired ? 'Expirado en Leadnamics' : 'Descartado en Leadnamics'
+      return {
+        ...lead,
+        score: 0,
+        ourScore,
+        breakdown,
+        category: 'COLD',
+        isDiscarded: true,
+        isExpired,
+        scoreReason: label,
+        recommendation: 'Lead inactivo. Sin acción requerida.',
+      }
+    }
+
+    // ── Score combinado ────────────────────────────────────────────────────────
+    // 60% score de Leadnamics (su modelo ML) + 40% nuestro algoritmo
+    // + señales de conversación (notas) + modificador de status
+    const lnmScore = lnm.score ?? null
+    const conversationSignal = analyzeConversation(lead.notes)
+    const statusKey = (lnm.status || '').replace(/ /g, '_')
+    const statusMod  = STATUS_MODIFIER[statusKey] ?? 0
+
+    let finalScore
+    let scoreReason
+
+    if (lnmScore !== null && lnmScore > 0) {
+      const base = Math.round(lnmScore * 0.6 + ourScore * 0.4)
+      finalScore = Math.max(0, Math.min(100, base + conversationSignal + statusMod))
+      scoreReason = `LNM ${lnmScore} + Nuestro ${ourScore} + Señales conversación`
+    } else {
+      // Sin score de Leadnamics → solo nuestro algoritmo + señales
+      finalScore = Math.max(0, Math.min(100, ourScore + conversationSignal + statusMod))
+      scoreReason = `Nuestro algoritmo ${ourScore} + Señales conversación`
+    }
+
+    const category = getCategory(finalScore)
+    return {
+      ...lead,
+      score: finalScore,
+      ourScore,
+      lnmScore,
+      breakdown,
+      category,
+      isDiscarded: false,
+      scoreReason,
+      recommendation: getRecommendation(category, lead),
+    }
+  }).sort((a, b) => b.score - a.score)
+}
+
 function getRecommendation(category, lead) {
   if (category === 'HOT') {
     return `Llamar en las próximas 2 horas. ${lead.engagement === 'visita_agendada' ? 'Confirmar visita.' : 'Proponer reunión hoy o mañana.'} Preparar propuesta con propiedades en rango $${(lead.budget || 0).toLocaleString()}.`
@@ -100,30 +208,12 @@ function getRecommendation(category, lead) {
   return `Agregar al newsletter semanal. Programar re-contacto en 30 días. Ofrecer contenido educativo sobre el mercado inmobiliario.`
 }
 
-function processLeads(rawLeads) {
-  return rawLeads.map(lead => {
-    const { total, breakdown } = calcScore(lead)
-    // Cuando el lead viene de Leadnamics, usar su score nativo como primario
-    const lnmScore = lead._lnm?.score ?? null
-    const finalScore = lnmScore !== null ? lnmScore : total
-    const category = getCategory(finalScore)
-    return {
-      ...lead,
-      score: finalScore,
-      ourScore: total,        // score de nuestro algoritmo (siempre disponible)
-      breakdown,
-      category,
-      recommendation: getRecommendation(category, lead),
-    }
-  }).sort((a, b) => b.score - a.score)
-}
-
 // ─── UI Helpers ────────────────────────────────────────────────────────────────
 
 const CATEGORY_STYLES = {
-  HOT:  { badge: 'badge-hot',  icon: Flame,          bar: 'bg-red-500',   text: 'text-red-600',   bg: 'bg-red-50'   },
-  WARM: { badge: 'badge-warm', icon: ThermometerSun, bar: 'bg-amber-400', text: 'text-amber-600', bg: 'bg-amber-50' },
-  COLD: { badge: 'badge-cold', icon: Snowflake,       bar: 'bg-blue-400',  text: 'text-blue-600',  bg: 'bg-blue-50'  },
+  HOT:  { badge: 'badge-hot',  icon: Flame,          bar: 'bg-red-500',   text: 'text-red-600',   bg: 'bg-red-50',   glow: '', stroke: '#ef4444', border: 'border-red-100'   },
+  WARM: { badge: 'badge-warm', icon: ThermometerSun, bar: 'bg-amber-400', text: 'text-amber-600', bg: 'bg-amber-50', glow: '', stroke: '#f59e0b', border: 'border-amber-100' },
+  COLD: { badge: 'badge-cold', icon: Snowflake,      bar: 'bg-blue-500',  text: 'text-blue-600',  bg: 'bg-blue-50',  glow: '', stroke: '#3b82f6', border: 'border-blue-100'  },
 }
 
 const SCORE_LABELS = {
@@ -153,15 +243,16 @@ function ScoreCircle({ score, category }) {
   return (
     <div className="relative flex items-center justify-center w-14 h-14">
       <svg className="w-14 h-14 -rotate-90" viewBox="0 0 48 48">
-        <circle cx="24" cy="24" r="20" fill="none" stroke="#e5e7eb" strokeWidth="4" />
+        <circle cx="24" cy="24" r="20" fill="none" stroke="#f3f4f6" strokeWidth="3.5" />
         <circle
           cx="24" cy="24" r="20" fill="none"
-          stroke={category === 'HOT' ? '#ef4444' : category === 'WARM' ? '#f59e0b' : '#3b82f6'}
-          strokeWidth="4"
+          stroke={style.stroke}
+          strokeWidth="3.5"
           strokeDasharray={circumference}
           strokeDashoffset={offset}
           strokeLinecap="round"
           className="transition-all duration-700"
+          style={{ filter: `drop-shadow(0 0 4px ${style.stroke}88)` }}
         />
       </svg>
       <span className={`absolute text-sm font-bold ${style.text}`}>{score}</span>
@@ -170,15 +261,16 @@ function ScoreCircle({ score, category }) {
 }
 
 function ScoreBar({ value, max, color }) {
+  const pct = (value / max) * 100
   return (
     <div className="flex items-center gap-2">
       <div className="flex-1 bg-gray-100 rounded-full h-1.5">
         <div
           className={`h-1.5 rounded-full ${color} transition-all duration-500`}
-          style={{ width: `${(value / max) * 100}%` }}
+          style={{ width: `${pct}%` }}
         />
       </div>
-      <span className="text-xs font-medium text-gray-500 w-8 text-right">{value}/{max}</span>
+      <span className="text-xs font-mono text-gray-400 w-8 text-right">{value}/{max}</span>
     </div>
   )
 }
@@ -192,9 +284,13 @@ function LeadCard({ lead }) {
     ? Math.floor((Date.now() - new Date(lead.lastContact)) / 86_400_000)
     : null
 
+  const accentColor = lead.isDiscarded
+    ? 'border-l-gray-200'
+    : { HOT: 'border-l-red-400', WARM: 'border-l-amber-400', COLD: 'border-l-blue-400' }[lead.category]
+
   return (
-    <div className="card overflow-hidden">
-      {/* Header */}
+    <div className={`card overflow-hidden border-l-2 ${accentColor}`}>
+      {/* Header row */}
       <div
         className="flex items-center gap-4 p-4 cursor-pointer select-none"
         onClick={() => setExpanded(e => !e)}
@@ -204,73 +300,97 @@ function LeadCard({ lead }) {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="font-semibold text-gray-900 truncate">{lead.name}</h3>
-            <span className={`badge inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${style.badge}`}>
-              <Icon className="w-3 h-3" />
-              {lead.category}
-            </span>
+            {lead._lnm?.id && (
+              <span className="text-[10px] font-mono text-gray-400 shrink-0 bg-gray-100 px-1.5 py-0.5 rounded">#{lead._lnm.id}</span>
+            )}
+            {lead.isDiscarded ? (
+              lead.isExpired ? (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-orange-50 text-orange-500 border border-orange-200">
+                  <Clock className="w-3 h-3" /> Expirado
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-gray-100 text-gray-500 border border-gray-200">
+                  <XCircle className="w-3 h-3" /> Descartado
+                </span>
+              )
+            ) : (
+              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${style.badge}`}>
+                <Icon className="w-3 h-3" />
+                {lead.category}
+              </span>
+            )}
           </div>
-          <p className="text-sm text-gray-500 truncate mt-0.5">{lead.propertyInterest}</p>
-          <div className="flex items-center gap-3 mt-1 text-xs text-gray-400 flex-wrap">
+          <p className="text-xs text-gray-500 truncate mt-0.5">{lead.propertyInterest}</p>
+          <div className="flex items-center gap-3 mt-1 text-[10px] text-gray-400 flex-wrap">
             {lead.budget > 0 && <span>${lead.budget.toLocaleString()}</span>}
             {lead.urgency && <span>{URGENCY_LABELS[lead.urgency] ?? lead.urgency}</span>}
             {daysSince !== null && (
-              <span>{daysSince === 0 ? 'Hoy' : daysSince === 1 ? 'Ayer' : `Hace ${daysSince} días`}</span>
+              <span className={daysSince <= 2 ? 'text-emerald-600' : daysSince > 14 ? 'text-red-400' : 'text-gray-400'}>
+                {daysSince === 0 ? 'Hoy' : daysSince === 1 ? 'Ayer' : `${daysSince}d atrás`}
+              </span>
             )}
           </div>
         </div>
 
         <div className="flex items-center gap-2 ml-auto flex-shrink-0">
-          <span className="text-sm font-bold text-gray-700">{lead.score}/100</span>
-          {expanded ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
+          <span className={`text-sm font-bold font-mono ${lead.isDiscarded ? 'text-gray-400' : style.text}`}>
+            {lead.score}<span className="text-[10px] font-normal text-gray-400">/100</span>
+          </span>
+          {expanded
+            ? <ChevronUp className="w-4 h-4 text-gray-400" />
+            : <ChevronDown className="w-4 h-4 text-gray-400" />}
         </div>
       </div>
 
-      {/* Expanded Detail */}
+      {/* Expanded panel */}
       {expanded && (
         <div className="border-t border-gray-100 px-4 pb-4 pt-3 space-y-4">
 
-          {/* Score Breakdown */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Desglose de score</p>
-              {lead._lnm?.score != null && (
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="text-gray-400">Leadnamics:</span>
-                  <span className={`font-bold ${style.text}`}>{lead._lnm.score}</span>
-                  {lead._lnm.stage && <span className="text-gray-300">·</span>}
-                  {lead._lnm.stage && <span className="text-gray-400">{lead._lnm.stage}</span>}
-                  {lead._lnm.account && (
-                    <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 font-medium">
-                      {lead._lnm.account}
-                    </span>
-                  )}
-                </div>
-              )}
+          {/* Score breakdown */}
+          <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
+            <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Score breakdown</p>
+              <div className="flex items-center gap-1.5 text-[10px] flex-wrap font-mono">
+                {lead.lnmScore != null && (
+                  <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 border border-indigo-100">
+                    LNM {lead.lnmScore}
+                  </span>
+                )}
+                {lead.ourScore != null && (
+                  <span className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 border border-gray-200">
+                    LOCAL {lead.ourScore}
+                  </span>
+                )}
+                {lead._lnm?.stage && (
+                  <span className="text-gray-400">{lead._lnm.stage}</span>
+                )}
+                {lead._lnm?.account && (
+                  <span className="px-1.5 py-0.5 rounded bg-violet-50 text-violet-600 border border-violet-100">
+                    {lead._lnm.account}
+                  </span>
+                )}
+              </div>
             </div>
-            <div className="space-y-2">
+            <div className="space-y-2.5">
               {Object.entries(SCORE_LABELS).map(([key, { label, icon: LabelIcon, max }]) => (
-                <div key={key} className="grid grid-cols-[120px_1fr] items-center gap-2">
-                  <div className="flex items-center gap-1.5 text-xs text-gray-600">
-                    <LabelIcon className="w-3.5 h-3.5 text-gray-400" />
+                <div key={key} className="grid grid-cols-[110px_1fr] items-center gap-2">
+                  <div className="flex items-center gap-1.5 text-[10px] text-gray-500 uppercase tracking-wide">
+                    <LabelIcon className="w-3 h-3 text-gray-400" />
                     {label}
                   </div>
-                  <ScoreBar
-                    value={lead.breakdown[key]}
-                    max={max}
-                    color={style.bar}
-                  />
+                  <ScoreBar value={lead.breakdown[key]} max={max} color={style.bar} />
                 </div>
               ))}
             </div>
           </div>
 
-          {/* Objections */}
+          {/* Objeciones */}
           {lead.objections?.length > 0 && (
             <div>
-              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Objeciones detectadas</p>
+              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2">Objeciones</p>
               <div className="flex flex-wrap gap-1.5">
                 {lead.objections.map((obj, i) => (
-                  <span key={i} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-red-50 text-red-700 text-xs">
+                  <span key={i} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-red-50 text-red-600 border border-red-100 text-[10px]">
                     <XCircle className="w-3 h-3" /> {obj}
                   </span>
                 ))}
@@ -278,26 +398,28 @@ function LeadCard({ lead }) {
             </div>
           )}
 
-          {/* Lead Info */}
-          <div className="grid grid-cols-2 gap-2 text-sm">
+          {/* Info grid */}
+          <div className="grid grid-cols-2 gap-2">
             {lead.phone && (
-              <div className="flex items-center gap-1.5 text-gray-600">
-                <span className="text-gray-400">📱</span> {lead.phone}
+              <div className="flex items-center gap-1.5 text-xs text-gray-600 bg-gray-50 rounded-lg px-2.5 py-2 border border-gray-100">
+                <span className="text-gray-400">📱</span>
+                <span className="font-mono">{lead.phone}</span>
+                {lead._lnm?.id && <span className="text-[10px] text-gray-400 ml-1">#{lead._lnm.id}</span>}
               </div>
             )}
             {lead.source && (
-              <div className="flex items-center gap-1.5 text-gray-600">
+              <div className="flex items-center gap-1.5 text-xs text-gray-600 bg-gray-50 rounded-lg px-2.5 py-2 border border-gray-100">
                 <span className="text-gray-400">📌</span> {lead.source}
               </div>
             )}
             {lead.engagement && (
-              <div className="flex items-center gap-1.5 text-gray-600">
+              <div className="flex items-center gap-1.5 text-xs text-gray-600 bg-gray-50 rounded-lg px-2.5 py-2 border border-gray-100">
                 <CheckCircle className="w-3.5 h-3.5 text-gray-400" />
                 {ENGAGEMENT_LABELS[lead.engagement] ?? lead.engagement}
               </div>
             )}
             {lead.zone && (
-              <div className="flex items-center gap-1.5 text-gray-600">
+              <div className="flex items-center gap-1.5 text-xs text-gray-600 bg-gray-50 rounded-lg px-2.5 py-2 border border-gray-100">
                 <span className="text-gray-400">📍</span> {lead.zone}
               </div>
             )}
@@ -305,18 +427,29 @@ function LeadCard({ lead }) {
 
           {/* Notes */}
           {lead.notes && (
-            <div className="bg-gray-50 rounded-lg p-3 text-sm text-gray-600 italic">
-              "{lead.notes}"
+            <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
+              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Notas</p>
+              <p className="text-xs text-gray-500 italic leading-relaxed">"{lead.notes}"</p>
+            </div>
+          )}
+
+          {/* Razón de descarte */}
+          {lead._lnm?.endReason && (
+            <div className="rounded-lg p-3 bg-orange-50 border border-orange-100">
+              <p className="text-[10px] font-semibold uppercase tracking-widest mb-1 text-orange-500">Razón de cierre</p>
+              <p className="text-xs text-gray-600">{lead._lnm.endReason}</p>
             </div>
           )}
 
           {/* Recommendation */}
-          <div className={`rounded-lg p-3 ${style.bg}`}>
-            <p className="text-xs font-semibold uppercase tracking-wider mb-1 ${style.text}">
-              <span className={style.text}>Recomendación</span>
-            </p>
-            <p className="text-sm text-gray-700">{lead.recommendation}</p>
-          </div>
+          {!lead.isDiscarded && (
+            <div className={`rounded-lg p-3 ${style.bg} border ${style.border}`}>
+              <p className={`text-[10px] font-semibold uppercase tracking-widest mb-1 ${style.text}`}>
+                Recomendación IA
+              </p>
+              <p className="text-xs text-gray-700 leading-relaxed">{lead.recommendation}</p>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -324,16 +457,17 @@ function LeadCard({ lead }) {
 }
 
 function KPICard({ label, value, sub, icon: Icon, color }) {
+  const iconBg = color.replace('text-', 'bg-').replace(/\d+/, '100')
   return (
     <div className="card p-4">
       <div className="flex items-start justify-between">
         <div>
-          <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">{label}</p>
+          <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest">{label}</p>
           <p className={`text-2xl font-bold mt-1 ${color}`}>{value}</p>
-          {sub && <p className="text-xs text-gray-400 mt-0.5">{sub}</p>}
+          {sub && <p className="text-[10px] text-gray-400 mt-0.5">{sub}</p>}
         </div>
-        <div className={`p-2 rounded-lg ${color.replace('text-', 'bg-').replace('600', '100')}`}>
-          <Icon className={`w-5 h-5 ${color}`} />
+        <div className={`p-2 rounded-lg ${iconBg}`}>
+          <Icon className={`w-4 h-4 ${color}`} />
         </div>
       </div>
     </div>
@@ -371,6 +505,8 @@ export default function App() {
   const [syncInfo, setSyncInfo] = useState(null)   // { syncedAt, sources, totalMerged }
   const [accountFilter, setAccountFilter] = useState('TODOS')
   const [syncing, setSyncing] = useState(false)
+  const [projectFilter, setProjectFilter] = useState('TODOS')
+  const [hideInactive, setHideInactive] = useState(true)
 
   // URL del API — en prod usa /api/leads, en dev prueba el server local
   const API_URL = import.meta.env.VITE_API_URL || ''
@@ -398,6 +534,7 @@ export default function App() {
       setSyncInfo({ syncedAt: data.syncedAt, sources: data.sources, total: data.totalMerged })
       setActiveFilter('TODOS')
       setAccountFilter('TODOS')
+      setProjectFilter('TODOS')
     })
   }, [fetchLiveLeads])
 
@@ -456,6 +593,7 @@ export default function App() {
     setLeads(processLeads(sampleLeads))
     setActiveFilter('TODOS')
     setAccountFilter('TODOS')
+    setProjectFilter('TODOS')
     setSyncInfo(null)
   }, [])
 
@@ -473,10 +611,21 @@ export default function App() {
     return [...accounts]
   }, [leads])
 
+  // Proyectos disponibles: solo _lnm.project (campo limpio del bookmarklet)
+  const availableProjects = useMemo(() => {
+    const source = accountFilter === 'TODOS'
+      ? leads
+      : leads.filter(l => l._lnm?.account === accountFilter)
+    const projects = new Set(source.map(l => l._lnm?.project).filter(Boolean))
+    return [...projects].sort()
+  }, [leads, accountFilter])
+
   const filtered = useMemo(() => {
     let list = leads
+    if (hideInactive) list = list.filter(l => !l.isDiscarded)
     if (activeFilter !== 'TODOS') list = list.filter(l => l.category === activeFilter)
     if (accountFilter !== 'TODOS') list = list.filter(l => l._lnm?.account === accountFilter)
+    if (projectFilter !== 'TODOS') list = list.filter(l => l._lnm?.project === projectFilter)
     if (searchQuery) {
       const q = searchQuery.toLowerCase()
       list = list.filter(l =>
@@ -492,36 +641,58 @@ export default function App() {
       new Date(b.lastContact || 0) - new Date(a.lastContact || 0)
     )
     return list
-  }, [leads, activeFilter, searchQuery, sortBy])
+  }, [leads, activeFilter, accountFilter, projectFilter, searchQuery, sortBy, hideInactive])
 
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Top Bar */}
-      <header className="bg-white border-b border-gray-200 sticky top-0 z-10">
+      <header className="bg-gray-950 border-b border-gray-800 sticky top-0 z-10">
         <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-3 flex-wrap">
-          <div className="flex items-center gap-2">
-            <BarChart2 className="w-6 h-6 text-indigo-600" />
-            <h1 className="text-lg font-bold text-gray-900">Lead Profiler</h1>
-            <span className="text-xs text-gray-400 font-medium">Inmobiliario</span>
+
+          {/* Logo */}
+          <div className="flex items-center gap-2.5">
+            <div className="relative flex items-center justify-center w-8 h-8">
+              <div className="absolute inset-0 rounded-lg bg-indigo-500 opacity-20 blur-sm" />
+              <div className="relative w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center shadow-lg shadow-indigo-500/30">
+                <svg viewBox="0 0 20 20" fill="none" className="w-4 h-4">
+                  <circle cx="10" cy="10" r="2.5" fill="white" />
+                  <path d="M10 3 L10 7" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+                  <path d="M10 13 L10 17" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+                  <path d="M3 10 L7 10" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+                  <path d="M13 10 L17 10" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+                  <path d="M5.1 5.1 L7.9 7.9" stroke="white" strokeWidth="1.2" strokeLinecap="round" opacity="0.6" />
+                  <path d="M12.1 12.1 L14.9 14.9" stroke="white" strokeWidth="1.2" strokeLinecap="round" opacity="0.6" />
+                  <path d="M14.9 5.1 L12.1 7.9" stroke="white" strokeWidth="1.2" strokeLinecap="round" opacity="0.6" />
+                  <path d="M7.9 12.1 L5.1 14.9" stroke="white" strokeWidth="1.2" strokeLinecap="round" opacity="0.6" />
+                </svg>
+              </div>
+            </div>
+            <div>
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-white font-bold text-base tracking-tight">LeadProfiler</span>
+                <span className="text-indigo-400 text-[10px] font-semibold uppercase tracking-widest">AI</span>
+              </div>
+              <p className="text-gray-500 text-[10px] leading-none tracking-wide">Real Estate Intelligence</p>
+            </div>
           </div>
 
-          {/* Sync status */}
+          {/* Sync status pill */}
           {syncInfo ? (
-            <div className="flex items-center gap-1.5 text-xs text-green-600 bg-green-50 border border-green-100 rounded-lg px-2.5 py-1">
-              <Wifi className="w-3.5 h-3.5" />
-              <span className="font-medium">Leadnamics live</span>
-              <span className="text-green-400">·</span>
-              <span className="text-green-500">
+            <div className="flex items-center gap-1.5 text-xs bg-emerald-950 border border-emerald-800 text-emerald-400 rounded-full px-3 py-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="font-medium">Live</span>
+              <span className="text-emerald-600">·</span>
+              <span>
                 {new Date(syncInfo.syncedAt).toLocaleString('es-AR', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' })}
               </span>
               {syncInfo.sources?.length > 0 && (
-                <span className="text-green-400 ml-1">({syncInfo.sources.join(' + ')})</span>
+                <span className="text-emerald-600 ml-0.5">· {syncInfo.sources.join(' + ')}</span>
               )}
             </div>
           ) : (
-            <div className="flex items-center gap-1.5 text-xs text-gray-400 bg-gray-50 border border-gray-100 rounded-lg px-2.5 py-1">
-              <Database className="w-3.5 h-3.5" />
-              <span>Datos de ejemplo</span>
+            <div className="flex items-center gap-1.5 text-xs bg-gray-900 border border-gray-700 text-gray-500 rounded-full px-3 py-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-gray-600" />
+              <span>Sin conexión</span>
             </div>
           )}
 
@@ -530,14 +701,14 @@ export default function App() {
             <button
               onClick={handleManualSync}
               disabled={syncing}
-              className="btn-filter border-green-200 bg-green-50 hover:bg-green-100 text-green-700 flex items-center gap-1.5 disabled:opacity-50"
-              title="Recargar datos del cron"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-emerald-700 bg-emerald-950 hover:bg-emerald-900 text-emerald-400 transition-colors disabled:opacity-40"
+              title="Recargar datos"
             >
-              <RefreshCw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
+              <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
               Sync
             </button>
-            <label className="btn-filter border-gray-200 bg-white hover:bg-gray-50 text-gray-700 cursor-pointer flex items-center gap-1.5">
-              <Upload className="w-4 h-4" />
+            <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-700 bg-gray-900 hover:bg-gray-800 text-gray-300 transition-colors cursor-pointer">
+              <Upload className="w-3.5 h-3.5" />
               Importar
               <input
                 type="file"
@@ -547,16 +718,10 @@ export default function App() {
               />
             </label>
             <button
-              onClick={handleLoadSample}
-              className="btn-filter border-gray-200 bg-white hover:bg-gray-50 text-gray-700 flex items-center gap-1.5"
-            >
-              Demo
-            </button>
-            <button
               onClick={handleExport}
-              className="btn-filter border-indigo-200 bg-indigo-600 hover:bg-indigo-700 text-white flex items-center gap-1.5"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition-colors shadow-lg shadow-indigo-500/20"
             >
-              <Download className="w-4 h-4" />
+              <Download className="w-3.5 h-3.5" />
               Exportar
             </button>
           </div>
@@ -567,11 +732,11 @@ export default function App() {
 
         {/* KPIs */}
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-          <KPICard label="Total Leads"   value={stats.total}    icon={Users}         color="text-gray-700" />
-          <KPICard label="HOT"           value={stats.hot}      icon={Flame}         color="text-red-600"  sub="≥ 70 pts" />
-          <KPICard label="WARM"          value={stats.warm}     icon={ThermometerSun} color="text-amber-600" sub="40-69 pts" />
-          <KPICard label="COLD"          value={stats.cold}     icon={Snowflake}     color="text-blue-600" sub="< 40 pts" />
-          <KPICard label="Score Promedio" value={stats.avgScore} icon={TrendingUp}   color="text-indigo-600" sub="de 100" />
+          <KPICard label="Total Leads"    value={stats.total}    icon={Users}          color="text-gray-600" />
+          <KPICard label="HOT"            value={stats.hot}      icon={Flame}          color="text-red-600"    sub="≥ 70 pts" />
+          <KPICard label="WARM"           value={stats.warm}     icon={ThermometerSun} color="text-amber-600"  sub="40-69 pts" />
+          <KPICard label="COLD"           value={stats.cold}     icon={Snowflake}      color="text-blue-600"   sub="< 40 pts" />
+          <KPICard label="Score Promedio" value={stats.avgScore} icon={TrendingUp}     color="text-indigo-600" sub="de 100" />
         </div>
 
         {/* Drop Zone + Filters */}
@@ -581,47 +746,55 @@ export default function App() {
           onDrop={handleDrop}
         >
           {dragging && (
-            <div className="fixed inset-0 bg-indigo-600/10 border-4 border-dashed border-indigo-400 z-50 flex items-center justify-center pointer-events-none">
-              <div className="bg-white rounded-xl p-8 shadow-xl text-center">
-                <Upload className="w-10 h-10 text-indigo-500 mx-auto mb-2" />
-                <p className="text-lg font-semibold text-indigo-700">Soltá el archivo aquí</p>
-                <p className="text-sm text-gray-400">JSON o CSV</p>
+            <div className="fixed inset-0 bg-indigo-500/5 border-2 border-dashed border-indigo-500/40 z-50 flex items-center justify-center pointer-events-none">
+              <div className="bg-[#0f0f1a] border border-indigo-500/30 rounded-xl p-8 shadow-2xl text-center">
+                <Upload className="w-8 h-8 text-indigo-400 mx-auto mb-2" />
+                <p className="text-sm font-semibold text-indigo-300">Soltá el archivo aquí</p>
+                <p className="text-xs text-gray-600 mt-1">JSON o CSV</p>
               </div>
             </div>
           )}
 
-          <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center">
-            {/* Filter buttons */}
-            <div className="flex gap-1.5 flex-wrap">
-              {FILTERS.map(f => {
-                const counts = { TODOS: stats.total, HOT: stats.hot, WARM: stats.warm, COLD: stats.cold }
-                const isActive = activeFilter === f
-                const colors = {
-                  TODOS: isActive ? 'bg-gray-800 text-white border-gray-800' : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300',
-                  HOT:   isActive ? 'bg-red-500 text-white border-red-500'   : 'bg-white text-red-600 border-red-200 hover:border-red-300',
-                  WARM:  isActive ? 'bg-amber-500 text-white border-amber-500' : 'bg-white text-amber-600 border-amber-200 hover:border-amber-300',
-                  COLD:  isActive ? 'bg-blue-500 text-white border-blue-500'  : 'bg-white text-blue-600 border-blue-200 hover:border-blue-300',
-                }
-                return (
-                  <button
-                    key={f}
-                    onClick={() => setActiveFilter(f)}
-                    className={`btn-filter ${colors[f]}`}
-                  >
-                    {f} <span className="ml-1 opacity-70 text-xs">({counts[f]})</span>
-                  </button>
-                )
-              })}
+          <div className="flex flex-col gap-2">
+            {/* Fila 1: categorías + búsqueda */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="flex gap-1">
+                {FILTERS.map(f => {
+                  const counts = { TODOS: stats.total, HOT: stats.hot, WARM: stats.warm, COLD: stats.cold }
+                  const isActive = activeFilter === f
+                  const colors = {
+                    TODOS: isActive ? 'bg-gray-800 text-white border-gray-800'             : 'bg-white text-gray-500 border-gray-200 hover:border-gray-300',
+                    HOT:   isActive ? 'bg-red-500 text-white border-red-500'               : 'bg-white text-red-600 border-red-200 hover:border-red-300',
+                    WARM:  isActive ? 'bg-amber-500 text-white border-amber-500'           : 'bg-white text-amber-600 border-amber-200 hover:border-amber-300',
+                    COLD:  isActive ? 'bg-blue-500 text-white border-blue-500'             : 'bg-white text-blue-600 border-blue-200 hover:border-blue-300',
+                  }
+                  return (
+                    <button
+                      key={f}
+                      onClick={() => setActiveFilter(f)}
+                      className={`btn-filter ${colors[f]}`}
+                    >
+                      {f} <span className="ml-1 opacity-60 text-[10px]">{counts[f]}</span>
+                    </button>
+                  )
+                })}
+              </div>
+              <input
+                type="text"
+                placeholder="Buscar nombre, teléfono..."
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                className="ml-auto w-52 px-3 py-1.5 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-200 bg-white text-gray-700 placeholder-gray-400"
+              />
             </div>
 
-            {/* Search & Sort */}
-            <div className="flex gap-2 ml-auto w-full sm:w-auto flex-wrap">
-              {/* Filtro por cuenta */}
+            {/* Fila 2: filtros secundarios */}
+            <div className="flex items-center gap-2 flex-wrap">
               {availableAccounts.length > 1 && (
                 <select
                   value={accountFilter}
-                  onChange={e => setAccountFilter(e.target.value)}
-                  className="px-3 py-2 text-sm border border-indigo-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300 bg-white text-indigo-700 font-medium"
+                  onChange={e => { setAccountFilter(e.target.value); setProjectFilter('TODOS') }}
+                  className="px-2.5 py-1.5 text-xs border border-gray-200 rounded-lg focus:outline-none bg-white text-gray-600"
                 >
                   <option value="TODOS">Todas las cuentas</option>
                   {availableAccounts.map(a => (
@@ -629,21 +802,38 @@ export default function App() {
                   ))}
                 </select>
               )}
-              <input
-                type="text"
-                placeholder="Buscar lead..."
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                className="flex-1 sm:w-48 px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300 bg-white"
-              />
+              {availableProjects.length > 0 && (
+                <select
+                  value={projectFilter}
+                  onChange={e => setProjectFilter(e.target.value)}
+                  className="px-2.5 py-1.5 text-xs border border-gray-200 rounded-lg focus:outline-none bg-white text-gray-600 max-w-[200px]"
+                >
+                  <option value="TODOS">Todos los proyectos</option>
+                  {availableProjects.map(p => (
+                    <option key={p} value={p}>{p}</option>
+                  ))}
+                </select>
+              )}
+              <button
+                onClick={() => setHideInactive(h => !h)}
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
+                  hideInactive
+                    ? 'bg-white text-gray-400 border-gray-200 hover:border-gray-300 hover:text-gray-600'
+                    : 'bg-gray-800 text-white border-gray-800'
+                }`}
+              >
+                <XCircle className="w-3 h-3" />
+                {hideInactive ? 'Mostrar inactivos' : 'Ocultar inactivos'}
+              </button>
+
               <select
                 value={sortBy}
                 onChange={e => setSortBy(e.target.value)}
-                className="px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300 bg-white"
+                className="ml-auto px-2.5 py-1.5 text-xs border border-gray-200 rounded-lg focus:outline-none bg-white text-gray-600"
               >
-                <option value="score">Por score</option>
-                <option value="recent">Más reciente</option>
-                <option value="name">Por nombre</option>
+                <option value="score">Score ↓</option>
+                <option value="recent">Reciente ↓</option>
+                <option value="name">Nombre A-Z</option>
               </select>
             </div>
           </div>
@@ -653,17 +843,17 @@ export default function App() {
         <div className="space-y-2">
           {filtered.length === 0 ? (
             <div className="card p-12 text-center">
-              <AlertCircle className="w-10 h-10 text-gray-300 mx-auto mb-3" />
-              <p className="text-gray-400 font-medium">No se encontraron leads</p>
-              <p className="text-sm text-gray-300 mt-1">Probá cambiando los filtros o importando un archivo</p>
+              <AlertCircle className="w-8 h-8 text-gray-300 mx-auto mb-3" />
+              <p className="text-gray-500 font-medium text-sm">Sin resultados</p>
+              <p className="text-xs text-gray-400 mt-1">Cambiá los filtros o sincronizá con Leadnamics</p>
             </div>
           ) : (
             filtered.map(lead => <LeadCard key={lead.id} lead={lead} />)
           )}
         </div>
 
-        <p className="text-center text-xs text-gray-300 pb-4">
-          Lead Profiler MVP · {filtered.length} de {leads.length} leads · Scores calculados localmente
+        <p className="text-center text-[10px] text-gray-400 pb-4">
+          LeadProfiler AI · {filtered.length} de {leads.length} leads · scores calculados localmente
         </p>
       </main>
     </div>
