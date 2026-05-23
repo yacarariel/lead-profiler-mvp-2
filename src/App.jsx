@@ -90,7 +90,7 @@ function getCategory(score) {
   return 'COLD'
 }
 
-// ─── Análisis de señales en notas y conversación ───────────────────────────────
+// ─── Señales de conversación ───────────────────────────────────────────────────
 
 const SIGNALS_POSITIVAS = [
   'interesad', 'quiere ver', 'quiero ver', 'visita', 'agend', 'confirm',
@@ -106,6 +106,25 @@ const SIGNALS_NEGATIVAS = [
   'no le gustó', 'no le gusto', 'no es lo que', 'arrepintió', 'arrepintio',
 ]
 
+// Señales de intención de visita (mensajes del cliente)
+const VISIT_SIGNALS = [
+  'visitar', 'visita', 'ver el depto', 'ver la unidad', 'ver el proyecto',
+  'quiero ver', 'cuando puedo', 'cuándo puedo', 'me gustaría conocer',
+  'puedo pasar', 'quiero ir', 'recorrido', 'showroom', 'ver en persona',
+  'conocer el lugar', 'ir a ver', 'hacer una visita', 'puedo ir',
+  'disponible para', 'agendar una', 'podemos reunirnos', 'reunión',
+]
+
+// Señales de intención de cierre
+const CLOSE_SIGNALS = [
+  'reserva', 'seña', 'señar', 'precio final', 'forma de pago', 'cuotas',
+  'financiación', 'financiacion', 'hipoteca', 'crédito', 'credito',
+  'escritura', 'boleto', 'firmar', 'quiero avanzar', 'me decido',
+  'cuando empezamos', 'cómo sigo', 'como sigo', 'muy interesado',
+  'me interesa mucho', 'lo quiero', 'cuánto hay que dar', 'que necesito para',
+  'cuando hay que', 'lo tomamos', 'quiero reservar', 'para cerrar',
+]
+
 function analyzeConversation(notes) {
   if (!notes) return 0
   const text = notes.toLowerCase()
@@ -113,6 +132,51 @@ function analyzeConversation(notes) {
   SIGNALS_POSITIVAS.forEach(kw => { if (text.includes(kw)) signal += 4 })
   SIGNALS_NEGATIVAS.forEach(kw => { if (text.includes(kw)) signal -= 8 })
   return Math.max(-40, Math.min(20, signal))
+}
+
+// ─── Potenciales de visita y cierre ───────────────────────────────────────────
+
+function computePotentials(lnm, notes) {
+  const ms = lnm?.msgStats
+  // Texto combinado: mensajes del cliente + notas del agente
+  const fullText = [ms?.texts || '', notes || ''].join(' ').toLowerCase()
+
+  // Señales en texto
+  const visitHits  = VISIT_SIGNALS.filter(kw => fullText.includes(kw))
+  const closeHits  = CLOSE_SIGNALS.filter(kw => fullText.includes(kw))
+
+  const visitFromText  = Math.min(40, visitHits.length  * 15)
+  const closeFromText  = Math.min(40, closeHits.length  * 15)
+
+  // Velocidad de respuesta del cliente (avgResponseMin = minutos que tarda el bot en responderle)
+  // Lo que nos importa es qué tan activo está el cliente
+  const clientCount = ms?.clientCount ?? 0
+  const activityBonus = clientCount >= 8 ? 20 : clientCount >= 4 ? 12 : clientCount >= 2 ? 6 : 0
+
+  // Recencia del último mensaje del cliente
+  let recencyBonus = 0
+  if (ms?.lastClientAt) {
+    const daysSince = (Date.now() - new Date(ms.lastClientAt)) / 86_400_000
+    recencyBonus = daysSince <= 1 ? 25 : daysSince <= 3 ? 18 : daysSince <= 7 ? 10 : daysSince <= 14 ? 4 : 0
+  }
+
+  // Profundidad de conversación (muchos mensajes = compromiso)
+  const depthBonus = (ms?.total ?? 0) >= 15 ? 15 : (ms?.total ?? 0) >= 8 ? 8 : 0
+
+  // Status bonus
+  const statusKey = (lnm?.status || '').replace(/ /g, '_')
+  const statusBonus = { 'Prioridad': 20, 'En_Contacto': 10, 'Seguimiento': 5 }[statusKey] ?? 0
+
+  const visitPotential = Math.min(100, visitFromText + activityBonus + recencyBonus + depthBonus + statusBonus)
+  const closePotential = Math.min(100, closeFromText + activityBonus + recencyBonus + depthBonus + statusBonus)
+
+  return {
+    visitPotential,
+    closePotential,
+    visitSignals: visitHits,
+    closeSignals: closeHits,
+    msgStats: ms,
+  }
 }
 
 // Detecta si un lead fue descartado en Leadnamics por status o stage
@@ -184,6 +248,8 @@ function processLeads(rawLeads) {
     }
 
     const category = getCategory(finalScore)
+    const potentials = computePotentials(lnm, lead.notes)
+
     return {
       ...lead,
       score: finalScore,
@@ -193,6 +259,10 @@ function processLeads(rawLeads) {
       category,
       isDiscarded: false,
       scoreReason,
+      visitPotential:  potentials.visitPotential,
+      closePotential:  potentials.closePotential,
+      visitSignals:    potentials.visitSignals,
+      closeSignals:    potentials.closeSignals,
       recommendation: getRecommendation(category, lead),
     }
   }).sort((a, b) => b.score - a.score)
@@ -332,7 +402,26 @@ function LeadCard({ lead }) {
           </div>
         </div>
 
-        <div className="flex items-center gap-2 ml-auto flex-shrink-0">
+        <div className="flex items-center gap-3 ml-auto flex-shrink-0">
+          {/* Potenciales — solo en leads activos con datos */}
+          {!lead.isDiscarded && (lead.visitPotential > 0 || lead.closePotential > 0) && (
+            <div className="hidden sm:flex flex-col gap-1 w-24">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[9px] text-gray-400 w-9 text-right">Visita</span>
+                <div className="flex-1 bg-gray-100 rounded-full h-1">
+                  <div className="h-1 rounded-full bg-violet-400 transition-all" style={{width:`${lead.visitPotential}%`}} />
+                </div>
+                <span className="text-[9px] font-mono text-gray-400 w-5">{lead.visitPotential}</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[9px] text-gray-400 w-9 text-right">Cierre</span>
+                <div className="flex-1 bg-gray-100 rounded-full h-1">
+                  <div className="h-1 rounded-full bg-emerald-400 transition-all" style={{width:`${lead.closePotential}%`}} />
+                </div>
+                <span className="text-[9px] font-mono text-gray-400 w-5">{lead.closePotential}</span>
+              </div>
+            </div>
+          )}
           <span className={`text-sm font-bold font-mono ${lead.isDiscarded ? 'text-gray-400' : style.text}`}>
             {lead.score}<span className="text-[10px] font-normal text-gray-400">/100</span>
           </span>
@@ -438,6 +527,62 @@ function LeadCard({ lead }) {
             <div className="rounded-lg p-3 bg-orange-50 border border-orange-100">
               <p className="text-[10px] font-semibold uppercase tracking-widest mb-1 text-orange-500">Razón de cierre</p>
               <p className="text-xs text-gray-600">{lead._lnm.endReason}</p>
+            </div>
+          )}
+
+          {/* Potenciales de visita y cierre */}
+          {!lead.isDiscarded && (lead.visitPotential > 0 || lead.closePotential > 0) && (
+            <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
+              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-3">Análisis de conversación</p>
+              <div className="grid grid-cols-2 gap-3">
+                {/* Visita */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-medium text-violet-600">🏠 Potencial visita</span>
+                    <span className="text-xs font-bold font-mono text-violet-600">{lead.visitPotential}%</span>
+                  </div>
+                  <div className="bg-gray-200 rounded-full h-1.5">
+                    <div className="h-1.5 rounded-full bg-violet-400 transition-all" style={{width:`${lead.visitPotential}%`}} />
+                  </div>
+                  {lead.visitSignals?.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1.5">
+                      {lead.visitSignals.slice(0,3).map((s,i) => (
+                        <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-violet-50 text-violet-600 border border-violet-100">{s}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {/* Cierre */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-medium text-emerald-600">🤝 Potencial cierre</span>
+                    <span className="text-xs font-bold font-mono text-emerald-600">{lead.closePotential}%</span>
+                  </div>
+                  <div className="bg-gray-200 rounded-full h-1.5">
+                    <div className="h-1.5 rounded-full bg-emerald-400 transition-all" style={{width:`${lead.closePotential}%`}} />
+                  </div>
+                  {lead.closeSignals?.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1.5">
+                      {lead.closeSignals.slice(0,3).map((s,i) => (
+                        <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 border border-emerald-100">{s}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+              {/* Stats de mensajes */}
+              {lead._lnm?.msgStats && (
+                <div className="flex gap-3 mt-3 pt-3 border-t border-gray-200 text-[10px] text-gray-500 font-mono">
+                  <span>💬 {lead._lnm.msgStats.total} mensajes</span>
+                  <span>👤 {lead._lnm.msgStats.clientCount} del cliente</span>
+                  {lead._lnm.msgStats.avgResponseMin != null && (
+                    <span>⚡ respuesta promedio: {lead._lnm.msgStats.avgResponseMin < 60
+                      ? `${lead._lnm.msgStats.avgResponseMin}min`
+                      : `${Math.round(lead._lnm.msgStats.avgResponseMin/60)}h`}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
