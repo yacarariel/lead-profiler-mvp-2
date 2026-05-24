@@ -15,27 +15,37 @@
   .steps { font-size: .85rem; color: #374151; line-height: 1.8; margin-top: 12px; }
   .steps b { color: #111827; }
   code { background: #e5e7eb; padding: 2px 6px; border-radius: 4px; font-size: .8rem; }
+  .info { margin-top:24px; padding: 16px; background:#eff6ff; border-radius:8px; font-size:.85rem; color:#1d4ed8; }
+  .how { margin-top:16px; padding: 14px 16px; background:#f0fdf4; border-radius:8px; font-size:.85rem; color:#166534; border: 1px solid #bbf7d0; }
 </style>
 </head>
 <body>
 
-<h1>Lead Profiler — Bookmarklets de Sincronización</h1>
-<p>Arrastrá cada bookmarklet a tu barra de favoritos. Un click en la pestaña correcta de Leadnamics sincroniza automáticamente.</p>
+<h1>Lead Profiler — Bookmarklets</h1>
+<p>Un click en Leadnamics → abre Lead Profiler con el token listo → hace click en Sync para traer todos los leads.</p>
+
+<div class="how">
+  <b>✅ Cómo funciona ahora:</b><br>
+  1. Click en el bookmarklet estando en Leadnamics → se abre Lead Profiler con el token<br>
+  2. Lead Profiler registra el token automáticamente (aparece un banner verde)<br>
+  3. Click en <b>Sync</b> → el server descarga todos los leads directo desde Leadnamics<br><br>
+  El token de Leadnamics dura ~24h. Cuando expire, volvé a ejecutar el bookmarklet.
+</div>
 
 <div class="card">
   <h2>🔵 Cuenta: cekgroup (ariel@cekgroup.com.ar)</h2>
   <p class="sub">Usarlo estando en portal.leadnamics.io con esta cuenta</p>
 
-  <a class="bookmarklet" href="javascript:(async()=>{const r=localStorage.getItem('persist:root-lidz');if(!r){alert('No hay sesi%C3%B3n de Leadnamics en esta pesta%C3%B1a');return;}const token=JSON.parse(JSON.parse(r).user).accessToken;if(!token){alert('Token no encontrado');return;}const API='https://lidz-back-jipksosbaq-tl.a.run.app';const base=API+'/clients/v2/table';const pId=new URLSearchParams(location.search).get('projectId')||'1287';const f=await fetch(base+'?offset=0&limit=1&filterModel=%7B%22items%22%3A%5B%5D%7D&sortModel=&searchTerm=&projectId='+pId,{headers:{Authorization:'Bearer '+token}});const{total}=await f.json();const LIMIT=100;const pages=Math.ceil(total/LIMIT);const all=[];for(let i=0;i<pages;i++){const rr=await fetch(base+'?offset='+(i*LIMIT)+'&limit='+LIMIT+'&filterModel=%7B%22items%22%3A%5B%5D%7D&sortModel=&searchTerm=&projectId='+pId,{headers:{Authorization:'Bearer '+token}});const d=await rr.json();all.push(...(d.clients||[]));await new Promise(r=>setTimeout(r,120));}const DISC=new Set([152,154]);const msgStats={};const cutoff=Date.now()-60*24*60*60*1000;const forMsgs=all.filter(c=>!c.endReason&&!DISC.has(c.activeClientStage?.stageId)&&new Date(c.lastMessageDate||c.createdAt)>cutoff).sort((a,b)=>new Date(b.lastMessageDate||b.createdAt)-new Date(a.lastMessageDate||a.createdAt)).slice(0,100);for(const c of forMsgs){try{const msgs=await fetch(API+'/clients/'+c.id+'/messages',{headers:{Authorization:'Bearer '+token}}).then(r=>r.ok?r.json():[]);if(Array.isArray(msgs)&&msgs.length){const sorted=[...msgs].sort((a,b)=>new Date(a.createdAt)-new Date(b.createdAt));const cMsgs=sorted.filter(m=>m.sender==='client');const rts=[];for(let i=0;i<sorted.length-1;i++){if(sorted[i].sender==='client'&&sorted[i+1].sender!=='client'){const dif=(new Date(sorted[i+1].createdAt)-new Date(sorted[i].createdAt))/60000;if(dif>0&&dif<1440)rts.push(Math.round(dif));}}const lastC=cMsgs[cMsgs.length-1];msgStats[c.id]={total:msgs.length,clientCount:cMsgs.length,agentCount:sorted.length-cMsgs.length,lastClientAt:lastC?.createdAt||null,avgResponseMin:rts.length?Math.round(rts.reduce((a,b)=>a+b,0)/rts.length):null,texts:cMsgs.map(m=>m.text).filter(Boolean).join(' ')};}await new Promise(r=>setTimeout(r,100));}catch(e){}}const em={En_Contacto:'consulta_especifica',Prioridad:'solicita_propuesta',Seguimiento:'solicita_propuesta',Por_Contactar:'consulta_general'};const leads=all.map(c=>{const proj=c.subProject?.name||c.project?.name||'';const st=c.status||'';const endReason=c.endReason||null;const isDisc=Boolean(endReason)||DISC.has(c.activeClientStage?.stageId);const conv=[c.notes,c.adminNotes].filter(Boolean).join(' | ');return{id:'lnm-cekgroup-'+c.id,name:[c.firstName,c.lastName,c.motherLastName].filter(Boolean).join(' ').trim()||c.alias||'Cliente '+c.id,phone:c.phone||'',source:c.source||'Leadnamics (cekgroup)',propertyInterest:proj,zone:'',budget:c.budget||0,urgency:'sin_definir',engagement:em[st.replace(/ /g,'_')]||'consulta_general',objections:[],lastContact:c.lastMessageDate?.slice(0,10)||c.createdAt?.slice(0,10)||null,notes:conv,_lnm:{id:c.id,score:c.score??0,status:st,stage:c.activeClientStage?.name||'',stageId:c.activeClientStage?.stageId||null,account:'cekgroup',project:proj,endReason:endReason,discarded:isDisc,topics:c.topics||[],msgStats:msgStats[c.id]||null}};});try{const post=await fetch('http://localhost:3001/sync',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account:'cekgroup',leads})});const result=await post.json();const disc=leads.filter(l=>l._lnm.discarded).length;alert('✅ Sync OK: '+result.total+' leads ('+disc+' descartados) — conversaciones le%C3%ADdas: '+Object.keys(msgStats).length);}catch{alert('⚠️ Server no disponible. Descargando JSON...');const blob=new Blob([JSON.stringify(leads,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='leads-cekgroup-'+(new Date().toISOString().slice(0,10))+'.json';a.click();}})()">
-    ⚡ Sync CekGroup → Lead Profiler
+  <a class="bookmarklet" href="javascript:(()=>{const r=localStorage.getItem('persist:root-lidz');if(!r){alert('No hay sesi%C3%B3n de Leadnamics en esta pesta%C3%B1a');return;}const token=JSON.parse(JSON.parse(r).user).accessToken;if(!token){alert('Token no encontrado');return;}const pId=new URLSearchParams(location.search).get('projectId')||'1287';const params=new URLSearchParams({lnm_account:'cekgroup',lnm_token:token,lnm_projectId:pId});window.open('http://localhost:5173/?'+params.toString(),'_blank');})()">
+    ⚡ Conectar CekGroup → Lead Profiler
   </a>
 
   <div class="steps">
     <b>Cómo usar:</b><br>
     1. Arrastrá este botón a tu barra de favoritos<br>
     2. Abrí Leadnamics con la cuenta <code>ariel@cekgroup.com.ar</code><br>
-    3. Hacé click en el bookmarklet → sincroniza en ~60 seg (ahora lee conversaciones)<br>
-    4. Abrí Lead Profiler y hacé click en <b>Sync</b>
+    3. Click en el bookmarklet → se abre Lead Profiler automáticamente<br>
+    4. En Lead Profiler verás un banner verde "Token registrado" → click en <b>Sync</b>
   </div>
 </div>
 
@@ -43,23 +53,23 @@
   <h2>🟢 Cuenta: gmail (yacarariel@gmail.com)</h2>
   <p class="sub">Usarlo estando en portal.leadnamics.io con esta cuenta (Safari u otro perfil)</p>
 
-  <a class="bookmarklet" href="javascript:(async()=>{const r=localStorage.getItem('persist:root-lidz');if(!r){alert('No hay sesi%C3%B3n de Leadnamics en esta pesta%C3%B1a');return;}const token=JSON.parse(JSON.parse(r).user).accessToken;if(!token){alert('Token no encontrado');return;}const API='https://lidz-back-jipksosbaq-tl.a.run.app';const base=API+'/clients/v2/table';const pId=new URLSearchParams(location.search).get('projectId')||'1287';const f=await fetch(base+'?offset=0&limit=1&filterModel=%7B%22items%22%3A%5B%5D%7D&sortModel=&searchTerm=&projectId='+pId,{headers:{Authorization:'Bearer '+token}});const{total}=await f.json();const LIMIT=100;const pages=Math.ceil(total/LIMIT);const all=[];for(let i=0;i<pages;i++){const rr=await fetch(base+'?offset='+(i*LIMIT)+'&limit='+LIMIT+'&filterModel=%7B%22items%22%3A%5B%5D%7D&sortModel=&searchTerm=&projectId='+pId,{headers:{Authorization:'Bearer '+token}});const d=await rr.json();all.push(...(d.clients||[]));await new Promise(r=>setTimeout(r,120));}const DISC=new Set([152,154]);const msgStats={};const cutoff=Date.now()-60*24*60*60*1000;const forMsgs=all.filter(c=>!c.endReason&&!DISC.has(c.activeClientStage?.stageId)&&new Date(c.lastMessageDate||c.createdAt)>cutoff).sort((a,b)=>new Date(b.lastMessageDate||b.createdAt)-new Date(a.lastMessageDate||a.createdAt)).slice(0,100);for(const c of forMsgs){try{const msgs=await fetch(API+'/clients/'+c.id+'/messages',{headers:{Authorization:'Bearer '+token}}).then(r=>r.ok?r.json():[]);if(Array.isArray(msgs)&&msgs.length){const sorted=[...msgs].sort((a,b)=>new Date(a.createdAt)-new Date(b.createdAt));const cMsgs=sorted.filter(m=>m.sender==='client');const rts=[];for(let i=0;i<sorted.length-1;i++){if(sorted[i].sender==='client'&&sorted[i+1].sender!=='client'){const dif=(new Date(sorted[i+1].createdAt)-new Date(sorted[i].createdAt))/60000;if(dif>0&&dif<1440)rts.push(Math.round(dif));}}const lastC=cMsgs[cMsgs.length-1];msgStats[c.id]={total:msgs.length,clientCount:cMsgs.length,agentCount:sorted.length-cMsgs.length,lastClientAt:lastC?.createdAt||null,avgResponseMin:rts.length?Math.round(rts.reduce((a,b)=>a+b,0)/rts.length):null,texts:cMsgs.map(m=>m.text).filter(Boolean).join(' ')};}await new Promise(r=>setTimeout(r,100));}catch(e){}}const em={En_Contacto:'consulta_especifica',Prioridad:'solicita_propuesta',Seguimiento:'solicita_propuesta',Por_Contactar:'consulta_general'};const leads=all.map(c=>{const proj=c.subProject?.name||c.project?.name||'';const st=c.status||'';const endReason=c.endReason||null;const isDisc=Boolean(endReason)||DISC.has(c.activeClientStage?.stageId);const conv=[c.notes,c.adminNotes].filter(Boolean).join(' | ');return{id:'lnm-gmail-'+c.id,name:[c.firstName,c.lastName,c.motherLastName].filter(Boolean).join(' ').trim()||c.alias||'Cliente '+c.id,phone:c.phone||'',source:c.source||'Leadnamics (gmail)',propertyInterest:proj,zone:'',budget:c.budget||0,urgency:'sin_definir',engagement:em[st.replace(/ /g,'_')]||'consulta_general',objections:[],lastContact:c.lastMessageDate?.slice(0,10)||c.createdAt?.slice(0,10)||null,notes:conv,_lnm:{id:c.id,score:c.score??0,status:st,stage:c.activeClientStage?.name||'',stageId:c.activeClientStage?.stageId||null,account:'gmail',project:proj,endReason:endReason,discarded:isDisc,topics:c.topics||[],msgStats:msgStats[c.id]||null}};});try{const post=await fetch('http://localhost:3001/sync',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account:'gmail',leads})});const result=await post.json();const disc=leads.filter(l=>l._lnm.discarded).length;alert('✅ Sync OK: '+result.total+' leads ('+disc+' descartados) — conversaciones le%C3%ADdas: '+Object.keys(msgStats).length);}catch{alert('⚠️ Server no disponible. Descargando JSON...');const blob=new Blob([JSON.stringify(leads,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='leads-gmail-'+(new Date().toISOString().slice(0,10))+'.json';a.click();}})()">
-    ⚡ Sync Gmail → Lead Profiler
+  <a class="bookmarklet" href="javascript:(()=>{const r=localStorage.getItem('persist:root-lidz');if(!r){alert('No hay sesi%C3%B3n de Leadnamics en esta pesta%C3%B1a');return;}const token=JSON.parse(JSON.parse(r).user).accessToken;if(!token){alert('Token no encontrado');return;}const pId=new URLSearchParams(location.search).get('projectId')||'1287';const params=new URLSearchParams({lnm_account:'gmail',lnm_token:token,lnm_projectId:pId});window.open('http://localhost:5173/?'+params.toString(),'_blank');})()">
+    ⚡ Conectar Gmail → Lead Profiler
   </a>
 
   <div class="steps">
     <b>Cómo usar:</b><br>
     1. Arrastrá este botón a tu barra de favoritos de Safari<br>
     2. Abrí Leadnamics con la cuenta <code>yacarariel@gmail.com</code><br>
-    3. Hacé click en el bookmarklet → sincroniza en ~60 seg (ahora lee conversaciones)<br>
-    4. Abrí Lead Profiler y hacé click en <b>Sync</b>
+    3. Click en el bookmarklet → se abre Lead Profiler automáticamente<br>
+    4. En Lead Profiler verás un banner verde "Token registrado" → click en <b>Sync</b>
   </div>
 </div>
 
-<div style="margin-top:24px; padding: 16px; background:#eff6ff; border-radius:8px; font-size:.85rem; color:#1d4ed8;">
-  <b>ℹ️ Requisito:</b> El sync server debe estar corriendo: <code>npm run server</code> en el proyecto Lead Profiler.
-  Si el server no está corriendo, el bookmarklet descarga un JSON para importar manualmente.<br><br>
-  <b>⏱ Tiempo estimado:</b> ~60–90 seg dependiendo de la cantidad de leads activos (lee cada conversación).
+<div class="info">
+  <b>ℹ️ Requisito:</b> El server debe estar corriendo: <code>npm start</code> en el proyecto Lead Profiler.<br><br>
+  <b>⏱ Tiempo del sync:</b> ~90 seg desde Lead Profiler (el server lee directamente Leadnamics).<br>
+  <b>🔑 Token:</b> Los tokens de Leadnamics duran ~24h. Si Sync falla, volvé a ejecutar el bookmarklet.
 </div>
 
 </body>

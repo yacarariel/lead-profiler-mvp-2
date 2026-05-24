@@ -189,10 +189,31 @@ function computePotentials(lnm, notes) {
 // stageId 152 = "Descartado", 154 = "Expirado", 159 = "Descartado" en Leadnamics (confirmado empíricamente)
 const DISCARDED_STAGE_IDS = new Set([152, 154, 159])
 
+// endReasons que NO implican descarte — son handoffs positivos o cierres con compra
+const POSITIVE_END_REASONS = [
+  'se derivo al vendedor', 'se derivó al vendedor',
+  'derivado al vendedor', 'derivado a vendedor',
+  'vendedor asignado', 'asignado a vendedor',
+  'compro', 'compró', 'compra realizada', 'venta cerrada',
+  'cierre exitoso', 'reserva realizada',
+]
+
+function isPositiveEndReason(endReason) {
+  if (!endReason) return false
+  const normalized = endReason.toLowerCase().trim()
+  return POSITIVE_END_REASONS.some(r => normalized.includes(r))
+}
+
 function detectDescartado(lnm) {
-  if (lnm?.endReason) return true                          // razón de cierre explícita
-  if (lnm?.discarded === true) return true                 // flag del bookmarklet
-  if (DISCARDED_STAGE_IDS.has(lnm?.stageId)) return true  // stageId conocido (152=Descartado, 154=Expirado)
+  // stageId es la fuente más confiable — si está en lista de descartados, es definitivo
+  if (DISCARDED_STAGE_IDS.has(lnm?.stageId)) return true
+
+  // endReason: ignorar si es un handoff positivo (ej: "Se derivó al vendedor")
+  if (lnm?.endReason && !isPositiveEndReason(lnm.endReason)) return true
+
+  // flag del bookmarklet (puede ser incorrecto para endReasons positivos — tolerar)
+  if (lnm?.discarded === true && !isPositiveEndReason(lnm?.endReason)) return true
+
   const text = [lnm?.status, lnm?.stage, lnm?.funnelCol].filter(Boolean).join(' ').toLowerCase()
   return /descart|archiv|expir|no.interesa|sin.interes|cerrado.perdido|no.compra/.test(text)
 }
@@ -528,12 +549,22 @@ function LeadCard({ lead }) {
             </div>
           )}
 
-          {/* Razón de descarte */}
+          {/* Status / Razón de cierre */}
           {lead._lnm?.endReason && (
-            <div className="rounded-lg p-3 bg-orange-50 border border-orange-100">
-              <p className="text-[10px] font-semibold uppercase tracking-widest mb-1 text-orange-500">Razón de cierre</p>
-              <p className="text-xs text-gray-600">{lead._lnm.endReason}</p>
-            </div>
+            isPositiveEndReason(lead._lnm.endReason) ? (
+              <div className="rounded-lg p-3 bg-indigo-50 border border-indigo-100 flex items-center gap-2">
+                <CheckCircle className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-widest mb-0.5 text-indigo-500">Status</p>
+                  <p className="text-xs text-indigo-700 font-medium">{lead._lnm.endReason}</p>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-lg p-3 bg-orange-50 border border-orange-100">
+                <p className="text-[10px] font-semibold uppercase tracking-widest mb-1 text-orange-500">Razón de cierre</p>
+                <p className="text-xs text-gray-600">{lead._lnm.endReason}</p>
+              </div>
+            )
           )}
 
           {/* Potenciales de visita y cierre */}
@@ -643,11 +674,148 @@ function parseCSV(text) {
   })
 }
 
+// ─── Server URL helper ────────────────────────────────────────────────────────
+
+// En dev, el server corre en :3001 independientemente de Vite (:5173)
+// En prod, todo está en el mismo puerto → usamos rutas relativas
+const SERVER_URL = import.meta.env.VITE_API_URL ||
+  (import.meta.env.DEV ? 'http://localhost:3001' : '')
+
+// ─── Login Screen ─────────────────────────────────────────────────────────────
+
+function LoginScreen({ onLogin }) {
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError]     = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setLoading(true)
+    setError('')
+    try {
+      const r = await fetch(`${SERVER_URL}/api/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      })
+      const d = await r.json()
+      if (!r.ok) { setError(d.error || 'Credenciales incorrectas'); return }
+      localStorage.setItem('lp_token',    d.token)
+      localStorage.setItem('lp_username', d.username)
+      localStorage.setItem('lp_role',     d.role)
+      onLogin(d)
+    } catch {
+      setError('No se puede conectar al servidor. ¿Está corriendo npm run server?')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4">
+      <div className="w-full max-w-sm">
+        {/* Logo */}
+        <div className="flex items-center justify-center gap-3 mb-8">
+          <div className="relative w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center shadow-lg shadow-indigo-500/30">
+            <svg viewBox="0 0 20 20" fill="none" className="w-5 h-5">
+              <circle cx="10" cy="10" r="2.5" fill="white" />
+              <path d="M10 3 L10 7" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+              <path d="M10 13 L10 17" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+              <path d="M3 10 L7 10" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+              <path d="M13 10 L17 10" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </div>
+          <div>
+            <div className="flex items-baseline gap-1.5">
+              <span className="text-white font-bold text-xl tracking-tight">LeadProfiler</span>
+              <span className="text-indigo-400 text-[10px] font-semibold uppercase tracking-widest">AI</span>
+            </div>
+            <p className="text-gray-500 text-[10px]">Real Estate Intelligence</p>
+          </div>
+        </div>
+
+        {/* Card */}
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 shadow-2xl">
+          <h2 className="text-white font-semibold text-base mb-1">Iniciar sesión</h2>
+          <p className="text-gray-500 text-xs mb-5">Acceso restringido a usuarios autorizados</p>
+
+          <form onSubmit={handleSubmit} className="space-y-3">
+            <div>
+              <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">
+                Usuario
+              </label>
+              <input
+                type="text"
+                autoComplete="username"
+                value={username}
+                onChange={e => setUsername(e.target.value)}
+                required
+                className="w-full px-3 py-2.5 text-sm bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
+                placeholder="tu usuario"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">
+                Contraseña
+              </label>
+              <input
+                type="password"
+                autoComplete="current-password"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                required
+                className="w-full px-3 py-2.5 text-sm bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
+                placeholder="••••••••"
+              />
+            </div>
+
+            {error && (
+              <div className="flex items-center gap-2 px-3 py-2 bg-red-950 border border-red-800 rounded-lg">
+                <XCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                <p className="text-xs text-red-400">{error}</p>
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full py-2.5 text-sm font-semibold bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded-lg transition shadow-lg shadow-indigo-500/20 mt-1"
+            >
+              {loading ? 'Verificando...' : 'Ingresar'}
+            </button>
+          </form>
+        </div>
+
+        <p className="text-center text-[10px] text-gray-700 mt-4">
+          Lead Profiler AI · acceso privado
+        </p>
+      </div>
+    </div>
+  )
+}
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 
 const FILTERS = ['TODOS', 'HOT', 'WARM', 'COLD']
 
 export default function App() {
+  // ── Auth ──────────────────────────────────────────────────────────────────
+  const [session, setSession] = useState(() => {
+    const token    = localStorage.getItem('lp_token')
+    const username = localStorage.getItem('lp_username')
+    const role     = localStorage.getItem('lp_role')
+    return token ? { token, username, role } : null
+  })
+
+  const handleLogin = (data) => setSession(data)
+  const handleLogout = () => {
+    localStorage.removeItem('lp_token')
+    localStorage.removeItem('lp_username')
+    localStorage.removeItem('lp_role')
+    setSession(null)
+  }
+
   const [leads, setLeads] = useState(() => processLeads(sampleLeads))
   const [activeFilter, setActiveFilter] = useState('TODOS')
   const [searchQuery, setSearchQuery] = useState('')
@@ -656,26 +824,87 @@ export default function App() {
   const [syncInfo, setSyncInfo] = useState(null)   // { syncedAt, sources, totalMerged }
   const [accountFilter, setAccountFilter] = useState('TODOS')
   const [syncing, setSyncing] = useState(false)
+  const [pullStatus, setPullStatus] = useState(null)   // estado del pull server-side
   const [projectFilter, setProjectFilter] = useState('TODOS')
   const [hideInactive, setHideInactive] = useState(true)
+  const [daysFilter, setDaysFilter] = useState(null)   // null | 10 | 30 | 60
+  const [serverOnline, setServerOnline] = useState(false)
+  const [accountsReady, setAccountsReady] = useState([])  // cuentas con token registrado
 
-  // URL del API — en prod usa /api/leads, en dev prueba el server local
-  const API_URL = import.meta.env.VITE_API_URL || ''
+  const [tokenBanner, setTokenBanner] = useState(null)  // { account } cuando se acaba de registrar
+
+  // Detectar token de Leadnamics en URL params (viene del bookmarklet via window.open)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const lnmToken     = params.get('lnm_token')
+    const lnmAccount   = params.get('lnm_account')
+    const lnmProjectId = params.get('lnm_projectId')
+    if (!lnmToken || !lnmAccount) return
+
+    // Limpiar URL inmediatamente (el token no debe quedar en historial)
+    window.history.replaceState({}, '', '/')
+
+    // Registrar en el server (localhost → localhost, sin Chrome PNA blocking)
+    fetch(`${SERVER_URL}/api/register-token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ account: lnmAccount, token: lnmToken, projectId: lnmProjectId }),
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (d.ok) {
+          setTokenBanner(lnmAccount)
+          setAccountsReady(prev => [...new Set([...prev, lnmAccount])])
+          setTimeout(() => setTokenBanner(null), 8000)
+        }
+      })
+      .catch(() => {})
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Ping server cada 15 segundos + verificar cuentas registradas
+  useEffect(() => {
+    const check = async () => {
+      try {
+        const r = await fetch(`${SERVER_URL}/api/status`, { signal: AbortSignal.timeout(3000) })
+        if (r.ok) {
+          const data = await r.json()
+          setServerOnline(true)
+          setAccountsReady(data.accountsReady || [])
+        } else {
+          setServerOnline(false)
+        }
+      } catch {
+        setServerOnline(false)
+      }
+    }
+    check()
+    const id = setInterval(check, 15_000)
+    return () => clearInterval(id)
+  }, [])
 
   const fetchLiveLeads = useCallback(async () => {
+    const authHeaders = session?.token
+      ? { Authorization: `Bearer ${session.token}` }
+      : {}
+
     // Intentar /api/leads (server unificado en prod)
-    let data = await fetch(`${API_URL}/api/leads?t=${Date.now()}`)
-      .then(r => r.ok ? r.json() : null)
+    let data = await fetch(`${SERVER_URL}/api/leads?t=${Date.now()}`, { headers: authHeaders })
+      .then(r => {
+        if (r.status === 401) { handleLogout(); return null }
+        return r.ok ? r.json() : null
+      })
       .catch(() => null)
 
-    // Fallback: leads-live.json estático (dev local)
+    // Fallback: leads-live.json estático (dev local, sin auth)
     if (!data) {
       data = await fetch(`/leads-live.json?t=${Date.now()}`)
         .then(r => r.ok ? r.json() : null)
         .catch(() => null)
     }
     return data
-  }, [API_URL])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.token])
 
   // Auto-carga al iniciar
   useEffect(() => {
@@ -689,16 +918,83 @@ export default function App() {
     })
   }, [fetchLiveLeads])
 
-  const handleManualSync = useCallback(() => {
-    setSyncing(true)
-    fetchLiveLeads()
-      .then(data => {
+  // Polling del estado del pull — corre mientras el pull está activo
+  const pollPullStatus = useCallback(async () => {
+    const r = await fetch(`${SERVER_URL}/api/pull/status`, {
+      headers: session?.token ? { Authorization: `Bearer ${session.token}` } : {},
+    }).then(r => r.ok ? r.json() : null).catch(() => null)
+    if (!r) return
+
+    setPullStatus(r)
+
+    if (r.running) {
+      // Seguir polleando cada 2 segundos mientras corre
+      setTimeout(pollPullStatus, 2000)
+    } else if (r.done && !r.error) {
+      // Terminó OK — recargar leads
+      setSyncing(false)
+      fetchLiveLeads().then(data => {
         if (!data?.leads?.length) return
         setLeads(processLeads(data.leads))
         setSyncInfo({ syncedAt: data.syncedAt, sources: data.sources, total: data.totalMerged })
       })
-      .finally(() => setSyncing(false))
-  }, [fetchLiveLeads])
+      // Limpiar el estado después de 4s
+      setTimeout(() => setPullStatus(null), 4000)
+    } else if (r.done && r.error) {
+      setSyncing(false)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.token, fetchLiveLeads])
+
+  const handleManualSync = useCallback(async () => {
+    if (syncing) return
+    setSyncing(true)
+    setPullStatus({ running: false, progress: 0, step: 'Conectando...' })
+
+    try {
+      // Intentar pull server-side desde Leadnamics
+      const resp = await fetch(`${SERVER_URL}/api/pull`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.token ? { Authorization: `Bearer ${session.token}` } : {}),
+        },
+      })
+      const r = await resp.json()
+
+      if (r?.ok) {
+        // Pull iniciado en el server — empezar polling
+        setPullStatus({ running: true, progress: 2, step: 'Iniciando sincronización con Leadnamics...' })
+        setTimeout(pollPullStatus, 1500)
+        return  // no llamar setSyncing(false) acá — lo hace pollPullStatus
+      }
+
+      // Error del server — mostrarlo visiblemente
+      const errMsg = r?.error || 'Error desconocido al iniciar el sync'
+      const needsBookmarklet = errMsg.includes('No hay cuentas') || errMsg.includes('token')
+      setPullStatus({
+        running: false,
+        done: true,
+        error: needsBookmarklet
+          ? '⚠️ Ejecutá el bookmarklet primero para registrar el token de Leadnamics. Solo necesitás hacerlo una vez (o cuando expire el token).'
+          : errMsg,
+      })
+
+    } catch {
+      // Server no disponible — intentar leer datos existentes
+      const data = await fetchLiveLeads()
+      if (data?.leads?.length) {
+        setLeads(processLeads(data.leads))
+        setSyncInfo({ syncedAt: data.syncedAt, sources: data.sources, total: data.totalMerged })
+        setPullStatus(null)
+      } else {
+        setPullStatus({ running: false, done: true, error: 'Server no disponible. ¿Está corriendo npm run server?' })
+      }
+    } finally {
+      setSyncing(false)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncing, session?.token, fetchLiveLeads, pollPullStatus])
 
   const handleFileImport = useCallback((file) => {
     const reader = new FileReader()
@@ -748,13 +1044,23 @@ export default function App() {
     setSyncInfo(null)
   }, [])
 
+  // Lista base: inactivos filtrados + filtro de días — base para los contadores de categoría
+  const baseList = useMemo(() => {
+    let list = hideInactive ? leads.filter(l => !l.isDiscarded) : leads
+    if (daysFilter) {
+      const cutoff = Date.now() - daysFilter * 86_400_000
+      list = list.filter(l => l.lastContact ? new Date(l.lastContact) >= cutoff : false)
+    }
+    return list
+  }, [leads, hideInactive, daysFilter])
+
   const stats = useMemo(() => ({
-    total: leads.length,
-    hot:   leads.filter(l => l.category === 'HOT').length,
-    warm:  leads.filter(l => l.category === 'WARM').length,
-    cold:  leads.filter(l => l.category === 'COLD').length,
-    avgScore: leads.length ? Math.round(leads.reduce((s, l) => s + l.score, 0) / leads.length) : 0,
-  }), [leads])
+    total: baseList.length,
+    hot:   baseList.filter(l => l.category === 'HOT').length,
+    warm:  baseList.filter(l => l.category === 'WARM').length,
+    cold:  baseList.filter(l => l.category === 'COLD').length,
+    avgScore: baseList.length ? Math.round(baseList.reduce((s, l) => s + l.score, 0) / baseList.length) : 0,
+  }), [baseList])
 
   // Cuentas disponibles para filtrar
   const availableAccounts = useMemo(() => {
@@ -772,8 +1078,7 @@ export default function App() {
   }, [leads, accountFilter])
 
   const filtered = useMemo(() => {
-    let list = leads
-    if (hideInactive) list = list.filter(l => !l.isDiscarded)
+    let list = baseList   // ya tiene hideInactive y daysFilter aplicados
     if (activeFilter !== 'TODOS') list = list.filter(l => l.category === activeFilter)
     if (accountFilter !== 'TODOS') list = list.filter(l => l._lnm?.account === accountFilter)
     if (projectFilter !== 'TODOS') list = list.filter(l => l._lnm?.project === projectFilter)
@@ -792,7 +1097,12 @@ export default function App() {
       new Date(b.lastContact || 0) - new Date(a.lastContact || 0)
     )
     return list
-  }, [leads, activeFilter, accountFilter, projectFilter, searchQuery, sortBy, hideInactive])
+  }, [baseList, activeFilter, accountFilter, projectFilter, searchQuery, sortBy])
+
+  // Auth gate — si no hay sesión y el server está online, pedir login
+  if (!session && serverOnline) {
+    return <LoginScreen onLogin={handleLogin} />
+  }
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -827,7 +1137,7 @@ export default function App() {
             </div>
           </div>
 
-          {/* Sync status pill */}
+          {/* Sync / connection status pill */}
           {syncInfo ? (
             <div className="flex items-center gap-1.5 text-xs bg-emerald-950 border border-emerald-800 text-emerald-400 rounded-full px-3 py-1">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
@@ -840,6 +1150,11 @@ export default function App() {
                 <span className="text-emerald-600 ml-0.5">· {syncInfo.sources.join(' + ')}</span>
               )}
             </div>
+          ) : serverOnline ? (
+            <div className="flex items-center gap-1.5 text-xs bg-emerald-950 border border-emerald-800 text-emerald-500 rounded-full px-3 py-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              <span>Online</span>
+            </div>
           ) : (
             <div className="flex items-center gap-1.5 text-xs bg-gray-900 border border-gray-700 text-gray-500 rounded-full px-3 py-1">
               <span className="w-1.5 h-1.5 rounded-full bg-gray-600" />
@@ -848,15 +1163,40 @@ export default function App() {
           )}
 
           <div className="ml-auto flex items-center gap-2 flex-wrap">
+            {/* Usuario logueado */}
+            {session?.username && (
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] text-gray-500 hidden sm:inline">{session.username}</span>
+                <button
+                  onClick={handleLogout}
+                  className="text-[10px] px-2 py-1 rounded-md text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition"
+                  title="Cerrar sesión"
+                >
+                  Salir
+                </button>
+              </div>
+            )}
             {/* Sync manual */}
             <button
               onClick={handleManualSync}
               disabled={syncing}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-emerald-700 bg-emerald-950 hover:bg-emerald-900 text-emerald-400 transition-colors disabled:opacity-40"
-              title="Recargar datos"
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors disabled:opacity-40 ${
+                accountsReady.length > 0
+                  ? 'border-emerald-700 bg-emerald-950 hover:bg-emerald-900 text-emerald-400'
+                  : 'border-yellow-700 bg-yellow-950 hover:bg-yellow-900 text-yellow-400'
+              }`}
+              title={
+                accountsReady.length > 0
+                  ? `Sync desde Leadnamics (${accountsReady.join(', ')})`
+                  : 'Sin token — ejecutá el bookmarklet primero'
+              }
             >
               <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
-              Sync
+              {syncing
+                ? 'Sincronizando...'
+                : accountsReady.length > 0
+                  ? `Sync (${accountsReady.join(' + ')})`
+                  : 'Sync ⚠️'}
             </button>
             <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-700 bg-gray-900 hover:bg-gray-800 text-gray-300 transition-colors cursor-pointer">
               <Upload className="w-3.5 h-3.5" />
@@ -878,6 +1218,55 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      {/* Token registrado banner */}
+      {tokenBanner && (
+        <div className="bg-emerald-950 border-b border-emerald-800 px-4 py-2">
+          <div className="max-w-5xl mx-auto flex items-center gap-2 text-xs text-emerald-400">
+            <CheckCircle className="w-3.5 h-3.5 shrink-0" />
+            <span>
+              <span className="font-semibold">Token de Leadnamics registrado</span> para cuenta <span className="font-mono bg-emerald-900 px-1.5 py-0.5 rounded">{tokenBanner}</span> — ahora hacé click en <span className="font-semibold">Sync</span> para traer todos los leads.
+            </span>
+            <button onClick={() => setTokenBanner(null)} className="ml-auto text-emerald-700 hover:text-emerald-500">×</button>
+          </div>
+        </div>
+      )}
+
+      {/* Pull progress bar */}
+      {pullStatus && (
+        <div className="bg-gray-950 border-b border-gray-800 px-4 py-2">
+          <div className="max-w-5xl mx-auto">
+            {pullStatus.error ? (
+              <div className="flex items-center gap-2 text-xs text-red-400">
+                <XCircle className="w-3.5 h-3.5 shrink-0" />
+                <span>{pullStatus.error}</span>
+                <button onClick={() => setPullStatus(null)} className="ml-auto text-gray-600 hover:text-gray-400">×</button>
+              </div>
+            ) : pullStatus.done ? (
+              <div className="flex items-center gap-2 text-xs text-emerald-400">
+                <CheckCircle className="w-3.5 h-3.5 shrink-0" />
+                <span>Sync completo — {pullStatus.result?.total} leads, {pullStatus.result?.msgsFetched} conversaciones leídas</span>
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-[10px] text-gray-400">
+                  <span className="flex items-center gap-1.5">
+                    <RefreshCw className="w-3 h-3 animate-spin text-indigo-400" />
+                    {pullStatus.step || 'Sincronizando con Leadnamics...'}
+                  </span>
+                  <span className="font-mono text-indigo-400">{pullStatus.progress ?? 0}%</span>
+                </div>
+                <div className="w-full bg-gray-800 rounded-full h-1">
+                  <div
+                    className="h-1 rounded-full bg-indigo-500 transition-all duration-500"
+                    style={{ width: `${pullStatus.progress ?? 0}%` }}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       <main className="max-w-5xl mx-auto px-4 py-6 space-y-6">
 
@@ -977,10 +1366,38 @@ export default function App() {
                 {hideInactive ? 'Mostrar inactivos' : 'Ocultar inactivos'}
               </button>
 
+              {/* Filtro por recencia */}
+              <div className="flex items-center gap-0.5 ml-auto">
+                <span className="text-[10px] text-gray-400 mr-1 hidden sm:inline">Últimos</span>
+                {[10, 30, 60].map(d => (
+                  <button
+                    key={d}
+                    onClick={() => setDaysFilter(prev => prev === d ? null : d)}
+                    className={`px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
+                      daysFilter === d
+                        ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm shadow-indigo-200'
+                        : 'bg-white text-gray-500 border-gray-200 hover:border-indigo-300 hover:text-indigo-600'
+                    }`}
+                    title={`Últimos ${d} días`}
+                  >
+                    {d}d
+                  </button>
+                ))}
+                {daysFilter && (
+                  <button
+                    onClick={() => setDaysFilter(null)}
+                    className="ml-1 px-2 py-1.5 text-[10px] text-gray-400 hover:text-gray-600 transition-colors"
+                    title="Ver todos los períodos"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+
               <select
                 value={sortBy}
                 onChange={e => setSortBy(e.target.value)}
-                className="ml-auto px-2.5 py-1.5 text-xs border border-gray-200 rounded-lg focus:outline-none bg-white text-gray-600"
+                className="px-2.5 py-1.5 text-xs border border-gray-200 rounded-lg focus:outline-none bg-white text-gray-600"
               >
                 <option value="score">Score ↓</option>
                 <option value="recent">Reciente ↓</option>

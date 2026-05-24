@@ -4,3 +4,5 @@ dist/
 public/leads-live.json
 logs/
 *.log
+public/accounts.json
+public/users.json
