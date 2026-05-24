@@ -104,6 +104,11 @@ const SIGNALS_NEGATIVAS = [
   'no quiere', 'compró en', 'compro en', 'ya compró', 'ya tiene', 'no busca',
   'no puede', 'no está', 'no esta', 'fuera de presupuesto', 'muy caro',
   'no le gustó', 'no le gusto', 'no es lo que', 'arrepintió', 'arrepintio',
+  // señales directas del cliente en conversación
+  'no me sirve', 'no me va', 'nada de lo que', 'olvidate',
+  'no necesito', 'ya resolví', 'ya resolvio',
+  'no busco más', 'no busco mas', 'ya compré', 'ya compre',
+  'gracias pero no', 'no aplica', 'no me conviene', 'me escapa',
 ]
 
 // Señales de intención de visita (mensajes del cliente)
@@ -125,9 +130,10 @@ const CLOSE_SIGNALS = [
   'cuando hay que', 'lo tomamos', 'quiero reservar', 'para cerrar',
 ]
 
-function analyzeConversation(notes) {
-  if (!notes) return 0
-  const text = notes.toLowerCase()
+function analyzeConversation(notes, msgTexts) {
+  // Analiza notas del agente + mensajes directos del cliente
+  const text = [notes || '', msgTexts || ''].join(' ').toLowerCase()
+  if (!text.trim()) return 0
   let signal = 0
   SIGNALS_POSITIVAS.forEach(kw => { if (text.includes(kw)) signal += 4 })
   SIGNALS_NEGATIVAS.forEach(kw => { if (text.includes(kw)) signal -= 8 })
@@ -180,8 +186,8 @@ function computePotentials(lnm, notes) {
 }
 
 // Detecta si un lead fue descartado en Leadnamics por status o stage
-// stageId 152 = "Descartado", 154 = "Expirado" en Leadnamics (confirmado empíricamente)
-const DISCARDED_STAGE_IDS = new Set([152, 154])
+// stageId 152 = "Descartado", 154 = "Expirado", 159 = "Descartado" en Leadnamics (confirmado empíricamente)
+const DISCARDED_STAGE_IDS = new Set([152, 154, 159])
 
 function detectDescartado(lnm) {
   if (lnm?.endReason) return true                          // razón de cierre explícita
@@ -230,7 +236,7 @@ function processLeads(rawLeads) {
     // 60% score de Leadnamics (su modelo ML) + 40% nuestro algoritmo
     // + señales de conversación (notas) + modificador de status
     const lnmScore = lnm.score ?? null
-    const conversationSignal = analyzeConversation(lead.notes)
+    const conversationSignal = analyzeConversation(lead.notes, lead._lnm?.msgStats?.texts)
     const statusKey = (lnm.status || '').replace(/ /g, '_')
     const statusMod  = STATUS_MODIFIER[statusKey] ?? 0
 
